@@ -63,9 +63,12 @@ fn write_vec_to_c_ptr(vec: Vec<u8>) -> *mut u8 {
 pub mod c_api {
 
     use rusty_crypto::{sha512, speck};
-    use std::ffi::*;
+    use tokio::runtime::Runtime;
+    use std::{ffi::*, str::RMatchIndices};
 
-    use crate::{c_ptr_to_vec, write_vec_to_c_ptr};
+    use crate::{c_ptr_to_vec, io_util, web::{dynamo::DynamoDB, users::{self, UsersError}}, write_vec_to_c_ptr, SUCCESS};
+
+    // MARK: Crypto
 
     #[no_mangle]
     pub extern "C" fn capi_hash_bytes(pt: *mut u8, pt_len: c_int, digest: &mut sha512::Digest) -> c_int {
@@ -95,6 +98,69 @@ pub mod c_api {
         *pt_len = plaintext_bytes.len() as c_int;
         write_vec_to_c_ptr(plaintext_bytes)
     }
+
+    // MARK: Asynchronicity
+
+    /// Creates a Rust runtime object and allocates it on the heap, then returns a pointer to that object!
+    #[no_mangle]
+    pub extern "C" fn capi_create_runtime() -> *mut Runtime {
+        match Runtime::new() {
+            Ok(rt) => Box::into_raw(Box::new(rt)),
+            Err(e) => panic!("Error creating tokio runtime: {:?}", e)
+        }
+    }
+
+    #[no_mangle]
+    pub extern "C" fn capi_test_async(rt: *mut Runtime, callback: extern fn(c_int) -> ()) -> c_int {
+        unsafe {
+            if rt.is_null() {
+                return -1; // Indicate error
+            }
+            let rt = &*rt;
+
+            rt.spawn(async move {
+                println!("This code is asynchronous!");
+                callback(0);
+            });
+
+            0 // Indicate success
+        }
+    }
+
+    #[no_mangle]
+    pub extern "C" fn capi_destroy_runtime(rt: *mut Runtime) {
+        if rt.is_null() {
+            return;
+        }
+        unsafe {
+            drop(Box::from_raw(rt))
+        }
+    }
+    
+    // MARK: Users
+
+    // Creates a user with a given email address. This is an asynchronous function that calls a callback when finished.
+    // The callback is passed the error code (0 if success), the user ID (0 if failed), and the master key (all 0's if failed).
+    // #[no_mangle]
+    // pub extern "C" fn capi_create_user(rt: Box<Runtime>, email_ptr: *const c_char, callback: fn(c_int, c_ulonglong, &mut speck::Key)) {
+        
+    //     let handle = rt.handle();
+    //     let db = handle.block_on(DynamoDB::new());
+
+    //     let cstr = unsafe { CStr::from_ptr(email_ptr) };
+    //     let email_str = String::from_utf8_lossy(cstr.to_bytes()).to_string();
+
+    //     let mut runtime = match Runtime::new() {
+    //         Ok(rt) => rt,
+    //         Err(e) => panic!("Error creating tokio runtime: {:?}", e),
+    //     };
+
+    //     match users::create_user(&db, email_str).await {
+    //         Ok((uid, mk)) => callback(io_util::SUCCESS, uid, &mut mk),
+    //         Err(UsersError::EmailTaken(_)) => callback(io_util::EMAIL_TAKEN, 0, &mut [0 ; 32]),
+    //         Err(_) => callback(io_util::CONNECTION_ERROR, 0, &mut [0 ; 32])
+    //     }
+    // }
 
 }
 
