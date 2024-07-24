@@ -1,3 +1,7 @@
+
+
+use std::ffi::c_int;
+
 use io_util::*;
 use rusty_crypto::sha512;
 
@@ -17,31 +21,79 @@ pub fn hash_str(plaintext: String, digest: &mut sha512::Digest) -> Error {
     hash_bytes(bytes, digest)
 }
 
+// MARK: C Utility
+
+/// Converts a C pointer into a rust Vector
+fn c_ptr_to_vec<T: Copy>(ptr: *mut T, len: c_int) -> Vec<T> {
+    unsafe {
+        // this is a REALLY silly thing to do, but I don't know a workaround.
+        let mut vec = Vec::new();
+        for i in 0..len {
+            vec.push(*ptr.add(i as usize));
+        }
+        vec
+    }
+}
+
+/// Writes the contents of a rust byte vector to a C pointer, and returns
+/// the pointer to the C array
+fn write_vec_to_c_ptr(vec: Vec<u8>) -> *mut u8 {
+
+    use std::alloc::*;
+
+    let layout = match Layout::array::<u8>(vec.len()) {
+        Ok(l) => l,
+        Err(e) => panic!("Error allocating array: {:?}", e),
+    };
+
+    let ptr = unsafe {
+        alloc(layout)
+    };
+    
+    for i in 0..vec.len() {
+        unsafe {
+            *(ptr.add(i)) = vec[i];
+        }
+    }
+
+    ptr
+}
+
 // MARK: C Interface
 pub mod c_api {
 
-    use rusty_crypto::sha512;
+    use rusty_crypto::{sha512, speck};
     use std::ffi::*;
 
-    #[no_mangle]
-    pub extern "C" fn hash_bytes(pt: *mut u8, pt_len: c_int, digest: &mut sha512::Digest) -> c_int {
-        let as_vector = unsafe {
-            // this is a REALLY silly thing to do, but I don't know a workaround.
-            let mut vec = vec![0 ; pt_len as usize];
-            for i in 0..pt_len {
-                vec[i as usize] = *pt.add(i as usize)
-            }
-            vec
-        };
+    use crate::{c_ptr_to_vec, write_vec_to_c_ptr};
 
+    #[no_mangle]
+    pub extern "C" fn capi_hash_bytes(pt: *mut u8, pt_len: c_int, digest: &mut sha512::Digest) -> c_int {
+        let as_vector = c_ptr_to_vec(pt, pt_len);
         crate::hash_bytes(as_vector, digest)
     }
 
     #[no_mangle]
-    pub extern "C" fn hash_str(pt: *const c_char, digest: &mut sha512::Digest) -> c_int {
+    pub extern "C" fn capi_hash_str(pt: *const c_char, digest: &mut sha512::Digest) -> c_int {
         let cstr = unsafe { CStr::from_ptr(pt) };
         let string = String::from_utf8_lossy(cstr.to_bytes()).to_string();
         crate::hash_str(string.to_string(), digest)
+    }
+
+    #[no_mangle]
+    pub extern "C" fn capi_enc(pt: *mut u8, pt_len: c_int, key: &speck::Key, ct_len: &mut c_int) -> *mut u8 {
+        let bytes = c_ptr_to_vec(pt, pt_len);
+        let ciphertext_bytes = speck::enc_vec(*key, bytes);
+        *ct_len = ciphertext_bytes.len() as c_int;
+        write_vec_to_c_ptr(ciphertext_bytes)
+    }
+
+    #[no_mangle]
+    pub extern "C" fn capi_dec(ct: *mut u8, ct_len: c_int, key: &speck::Key, pt_len: &mut c_int) -> *mut u8 {
+        let bytes = c_ptr_to_vec(ct, ct_len);
+        let plaintext_bytes = speck::dec_vec(*key, bytes);
+        *pt_len = plaintext_bytes.len() as c_int;
+        write_vec_to_c_ptr(plaintext_bytes)
     }
 
 }
