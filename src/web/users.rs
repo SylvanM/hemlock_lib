@@ -117,3 +117,7 @@ pub async fn get_encrypted_secretkey(db: &DynamoDB, user_id: UserID) -> Result<V
 		Err(e) => Err(UsersError::DynamoError(e))
 	}
 }
+
+pub async fn get_user(db: &DynamoDB, user_id: UserID) -> Result<UserEntry, UsersError> {
+	Ok(db.download_user_entry(user_id).await?)
+}

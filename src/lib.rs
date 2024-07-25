@@ -66,7 +66,7 @@ pub mod c_api {
     use tokio::runtime::Runtime;
     use std::ffi::*;
 
-    use crate::{c_ptr_to_vec, io_util::*, web::{dynamo::DynamoDB, users::{self, UsersError}}, write_vec_to_c_ptr};
+    use crate::{c_ptr_to_vec, io_util::*, web::{dynamo::DynamoDB, users::{self, UserID, UsersError}}, write_vec_to_c_ptr};
 
     // MARK: Crypto
 
@@ -170,6 +170,12 @@ pub mod c_api {
                 }
             }
         });
+    }
+
+    #[no_mangle]
+    pub extern "C" fn capi_download_user(rt: *mut Runtime, user_id: UserID) {
+        // TODO: Adda  callback to this function header, and maybe also create a struct to pass into it!
+        // Make a rust struct that represents a User, and make it compatible with C, then pass that! that would be cool
     }
 
 }
