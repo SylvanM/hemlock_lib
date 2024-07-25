@@ -64,9 +64,9 @@ pub mod c_api {
 
     use rusty_crypto::{sha512, speck};
     use tokio::runtime::Runtime;
-    use std::{ffi::*, str::RMatchIndices};
+    use std::ffi::*;
 
-    use crate::{c_ptr_to_vec, io_util, web::{dynamo::DynamoDB, users::{self, UsersError}}, write_vec_to_c_ptr, SUCCESS};
+    use crate::{c_ptr_to_vec, io_util::*, web::{dynamo::DynamoDB, users::{self, UsersError}}, write_vec_to_c_ptr};
 
     // MARK: Crypto
 
@@ -141,26 +141,36 @@ pub mod c_api {
 
     // Creates a user with a given email address. This is an asynchronous function that calls a callback when finished.
     // The callback is passed the error code (0 if success), the user ID (0 if failed), and the master key (all 0's if failed).
-    // #[no_mangle]
-    // pub extern "C" fn capi_create_user(rt: Box<Runtime>, email_ptr: *const c_char, callback: fn(c_int, c_ulonglong, &mut speck::Key)) {
+    #[no_mangle]
+    pub extern "C" fn capi_create_user(rt: *mut Runtime, email_ptr: *const c_char, callback: extern fn(c_int, c_ulonglong, &mut speck::Key)) {
         
-    //     let handle = rt.handle();
-    //     let db = handle.block_on(DynamoDB::new());
+        println!("C function entered");
 
-    //     let cstr = unsafe { CStr::from_ptr(email_ptr) };
-    //     let email_str = String::from_utf8_lossy(cstr.to_bytes()).to_string();
+        let rt = unsafe { &*rt };
+        
+        let db = rt.block_on(DynamoDB::new());
 
-    //     let mut runtime = match Runtime::new() {
-    //         Ok(rt) => rt,
-    //         Err(e) => panic!("Error creating tokio runtime: {:?}", e),
-    //     };
+        println!("Database abstraction created");
 
-    //     match users::create_user(&db, email_str).await {
-    //         Ok((uid, mk)) => callback(io_util::SUCCESS, uid, &mut mk),
-    //         Err(UsersError::EmailTaken(_)) => callback(io_util::EMAIL_TAKEN, 0, &mut [0 ; 32]),
-    //         Err(_) => callback(io_util::CONNECTION_ERROR, 0, &mut [0 ; 32])
-    //     }
-    // }
+        let cstr = unsafe { CStr::from_ptr(email_ptr) };
+        
+        rt.spawn(async move {
+            let email_str = String::from_utf8_lossy(cstr.to_bytes()).to_string();
+
+            println!("About to make user creation web call");
+            let result = users::create_user(&db, email_str).await;
+            println!("DONE with that!");
+            
+            match result {
+                Ok((uid, mut mk)) => callback(SUCCESS, uid, &mut mk),
+                Err(UsersError::EmailTaken(_)) => callback(EMAIL_TAKEN, 0, &mut [0 ; 32]),
+                Err(e) => {
+                    println!("Encountered error: {:?}", e);
+                    callback(CONNECTION_ERROR, 0, &mut [0 ; 32])
+                }
+            }
+        });
+    }
 
 }
 

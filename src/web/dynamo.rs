@@ -163,6 +163,7 @@ impl DynamoDB {
 	/// Initializes a DynamoDB client using the environment's config
 	pub async fn new() -> DynamoDB {
 		let config = aws_config::load_from_env().await;
+		println!("Loaded config from env: {:?}", config);
 		let client = Client::new(&config);
 		DynamoDB { client }
 	}
