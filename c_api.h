@@ -3,11 +3,22 @@
 
 #include <stdint.h>
 
+// MARK: Cryptographic Constants
+
 const int ENCRYPTED_SECRET_KEY_LEN;
 const int PUBLIC_KEY_LEN;
 const int SECRET_KEY_LEN;
 const int SPECK_KEY_LEN;
 const int SHA512_DIGEST_LEN;
+
+// MARK: Error Codes
+
+const int SUCCESS;
+const int EMAIL_TAKEN;
+const int CONNECTION_ERROR;
+const int DATA_ERROR;
+const int USER_DOES_NOT_EXIST;
+const int EMAIL_DOES_NOT_EXIST;
 
 int capi_hash_bytes(const uint8_t *pt, int pt_len, uint8_t *digest);
 int capi_hash_str(const char *pt, uint8_t *digest);
@@ -22,16 +33,30 @@ void capi_destroy_runtime(void *rt);
 
 // MARK: Users
 
-typedef struct __c_user_t {
-	uint64_t user_id;
-	char *email;
-	uint8_t *public_key;
-	uint8_t *encrypted_secret_key;
-	uint8_t *master_key_hash;
-} c_user;
-
-
 void capi_create_user(const void *rt, const char* email_ptr, void (*callback)(int, u_int64_t, uint8_t *));
-void capi_download_user(const void *rt, uint64_t user_id, void (*callback)(int, c_user *));
+void capi_download_user(
+	const void *rt, 
+	uint64_t user_id, 
+	void (*callback)(
+		int,
+		uint64_t,
+		const char *,
+		const uint8_t *,
+		const uint8_t *,
+		const uint8_t *
+	)
+);
+void capi_download_user_email(
+	const void *rt, 
+	const char* email, 
+	void (*callback)(
+		int,
+		uint64_t,
+		const char *,
+		const uint8_t *,
+		const uint8_t *,
+		const uint8_t *
+	)
+);
 
 #endif

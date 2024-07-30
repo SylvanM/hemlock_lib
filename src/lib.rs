@@ -157,9 +157,9 @@ pub mod c_api {
     pub struct CUser<'a> {
         user_id: u64,
         email: &'a CStr,
-        public_key: lettuce::PublicKey,
-        encrypted_secret_key: *const u8,
-        master_key_hash: sha512::Digest
+        public_key: &'a mut lettuce::PublicKey,
+        encrypted_secret_key: &'a mut [u8 ; splitting::ENCRYPTED_SECRET_KEY_LEN],
+        master_key_hash: &'a mut sha512::Digest
     }
 
     // Creates a user with a given email address. This is an asynchronous function that calls a callback when finished.
@@ -167,22 +167,14 @@ pub mod c_api {
     #[no_mangle]
     pub extern "C" fn capi_create_user(rt: *mut Runtime, email_ptr: *const c_char, callback: extern fn(c_int, c_ulonglong, &mut speck::Key)) {
         
-        println!("C function entered");
-
         let rt = unsafe { &*rt };
-        
         let db = rt.block_on(DynamoDB::new());
-
-        println!("Database abstraction created");
-
         let cstr = unsafe { CStr::from_ptr(email_ptr) };
         
         rt.spawn(async move {
             let email_str = String::from_utf8_lossy(cstr.to_bytes()).to_string();
 
-            println!("About to make user creation web call");
             let result = users::create_user(&db, email_str).await;
-            println!("DONE with that!");
             
             match result {
                 Ok((uid, mut mk)) => callback(SUCCESS, uid, &mut mk),
@@ -196,7 +188,17 @@ pub mod c_api {
     }
 
     #[no_mangle]
-    pub extern "C" fn capi_download_user(rt: *mut Runtime, user_id: UserID, callback: extern fn(c_int, *mut CUser)) {
+    pub extern "C" fn capi_download_user(
+        rt: *mut Runtime, 
+        user_id: UserID, 
+        callback: extern fn(
+            c_int, 
+            u64, 
+            *const c_char, 
+            &mut lettuce::PublicKey, 
+            &mut [u8 ; splitting::ENCRYPTED_SECRET_KEY_LEN], 
+            &mut sha512::Digest)
+        ) {
         // TODO: Add callback to this function header, and maybe also create a struct to pass into it!
         // Make a rust struct that represents a User, and make it compatible with C, then pass that! that would be cool
 
@@ -204,25 +206,95 @@ pub mod c_api {
         let db = rt.block_on(DynamoDB::new());
 
         rt.spawn(async move {
+            let empty_cstring = CString::new("NULL".to_string().as_str()).unwrap();
+            let empty_cstr = empty_cstring.as_c_str();
+
             match users::get_user(&db, user_id).await {
                 Ok(mut user_entry) => {
                     let c_string = CString::new(user_entry.email.as_str()).unwrap();
                     let cstr = c_string.as_c_str();
-
-                    let mut c_user = CUser {
-                        user_id,
-                        email: cstr,
-                        public_key: user_entry.public_key,
-                        encrypted_secret_key: user_entry.encrypted_secret_key.as_mut_ptr(),
-                        master_key_hash: user_entry.master_key_hash.try_into().unwrap(),
-                    };
+                    let mut encrypted_seckey_array: [u8 ; splitting::ENCRYPTED_SECRET_KEY_LEN] = user_entry.encrypted_secret_key.try_into().unwrap();
+                    let mut mk_hash: [u8 ; sha512::DIGEST_BYTE_COUNT] = user_entry.master_key_hash.try_into().unwrap();
                     
-                    callback(SUCCESS, &mut c_user);
+                    callback(SUCCESS, user_id, cstr.as_ptr(), &mut user_entry.public_key, &mut encrypted_seckey_array, &mut mk_hash)
                 },
-                Err(UsersError::UserDoesNotExist) => callback(USER_DOES_NOT_EXIST, core::ptr::null_mut()),
-                Err(_) => callback(CONNECTION_ERROR, core::ptr::null_mut())
+                Err(UsersError::UserDoesNotExist) => callback(
+                    USER_DOES_NOT_EXIST, 
+                    0, 
+                    empty_cstr.as_ptr(), 
+                    &mut [0 ; lettuce::PK_BYTES], 
+                    &mut [0 ; splitting::ENCRYPTED_SECRET_KEY_LEN],
+                    &mut [0 ; sha512::DIGEST_BYTE_COUNT]
+                ),
+                Err(_) => callback(
+                    CONNECTION_ERROR, 
+                    0, 
+                    empty_cstr.as_ptr(), 
+                    &mut [0 ; lettuce::PK_BYTES], 
+                    &mut [0 ; splitting::ENCRYPTED_SECRET_KEY_LEN],
+                    &mut [0 ; sha512::DIGEST_BYTE_COUNT]
+                )
             }
         });
+    }
+
+    #[no_mangle]
+    pub extern "C" fn capi_download_user_email(
+        rt: *mut Runtime, 
+        email: *const c_char, 
+        callback: extern fn(
+            c_int, 
+            u64, 
+            *const c_char, 
+            &mut lettuce::PublicKey, 
+            &mut [u8 ; splitting::ENCRYPTED_SECRET_KEY_LEN], 
+            &mut sha512::Digest)
+        ) {
+
+            let rt = unsafe { &*rt };
+            let db = rt.block_on(DynamoDB::new());
+
+            let email_cstr = unsafe { CStr::from_ptr(email) };
+    
+            rt.spawn(async move {
+                let email_str = String::from_utf8_lossy(email_cstr.to_bytes()).to_string();
+
+                let empty_cstring = CString::new("NULL".to_string().as_str()).unwrap();
+                let empty_cstr = empty_cstring.as_c_str();
+    
+                match users::get_user_for_email(&db, email_str).await {
+                    Ok(mut user_entry) => {
+                        let c_string = CString::new(user_entry.email.as_str()).unwrap();
+                        let cstr = c_string.as_c_str();
+                        let mut encrypted_seckey_array: [u8 ; splitting::ENCRYPTED_SECRET_KEY_LEN] = user_entry.encrypted_secret_key.try_into().unwrap();
+                        let mut mk_hash: [u8 ; sha512::DIGEST_BYTE_COUNT] = user_entry.master_key_hash.try_into().unwrap();
+                        
+                        callback(SUCCESS, user_entry.user_id, cstr.as_ptr(), &mut user_entry.public_key, &mut encrypted_seckey_array, &mut mk_hash)
+                    },
+                    Err(UsersError::EmailDoesNotExist(e)) => {
+                        println!("Email {:?} does not exist", e);
+                        callback(
+                            EMAIL_DOES_NOT_EXIST, 
+                            0, 
+                            empty_cstr.as_ptr(), 
+                            &mut [0 ; lettuce::PK_BYTES], 
+                            &mut [0 ; splitting::ENCRYPTED_SECRET_KEY_LEN],
+                            &mut [0 ; sha512::DIGEST_BYTE_COUNT]
+                        );
+                    },
+                    Err(e) => {
+                        println!("Other error: {:?}", e);
+                        callback(
+                            CONNECTION_ERROR, 
+                            0, 
+                            empty_cstr.as_ptr(), 
+                            &mut [0 ; lettuce::PK_BYTES], 
+                            &mut [0 ; splitting::ENCRYPTED_SECRET_KEY_LEN],
+                            &mut [0 ; sha512::DIGEST_BYTE_COUNT]
+                        );
+                    }
+                }
+            });
     }
 
 }
@@ -236,8 +308,7 @@ mod tests {
     use crate::*;
 
     use web::{dynamo, messages::{self}, shares, users::{self, UserID, UsersError}};
-    use rusty_crypto::{secsharing::sharing::{Share256, SHARE_SIZE_BYTES}, sha512, speck};
-
+    use rusty_crypto::{lettuce, secsharing::sharing::{Share256, SHARE_SIZE_BYTES}, sha512, speck};
 
     const SYLVAN_USER_ID: UserID = 15893677956707774784;
     const SYLVAN_MASTER_KEY: users::MasterKey = [
@@ -265,10 +336,10 @@ mod tests {
 
     #[tokio::test]
     async fn key_enc_test() {
-        let key = speck::gen();
+        let keys = lettuce::gen();
         let keykey = speck::gen();
 
-        let encrypted_key = speck::enc_vec(key, keykey.to_vec());
+        let encrypted_key = speck::enc_vec(keykey, keys.secret_key.to_vec());
 
         println!("{}", encrypted_key.len())
     }
