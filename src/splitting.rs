@@ -31,6 +31,9 @@ impl From<MessagesError> for HemlockError {
 	}
 }
 
+/// The length of the ciphertext of a speck key, when encrypted with another speck key
+pub const ENCRYPTED_SECRET_KEY_LEN: usize = 64;
+
 /// Takes a file, encrypts it using a randomly generated secret key, uploads the file to the file server, and sends the shares of 
 /// the file to the desired parties. If `combiner_threshold` people recombine their keys, the original secret key
 /// will be restored.

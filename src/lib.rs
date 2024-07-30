@@ -62,11 +62,24 @@ fn write_vec_to_c_ptr(vec: Vec<u8>) -> *mut u8 {
 // MARK: C Interface
 pub mod c_api {
 
-    use rusty_crypto::{sha512, speck};
+    use rusty_crypto::{lettuce, sha512, speck};
     use tokio::runtime::Runtime;
-    use std::ffi::*;
+    use std::ffi::{self, *};
 
-    use crate::{c_ptr_to_vec, io_util::*, web::{dynamo::DynamoDB, users::{self, UserID, UsersError}}, write_vec_to_c_ptr};
+    use crate::{c_ptr_to_vec, io_util::*, splitting, web::{dynamo::DynamoDB, users::{self, UserID, UsersError}}, write_vec_to_c_ptr};
+
+    // MARK: Constants to publish
+
+    #[no_mangle]
+    pub static ENCRYPTED_SECRET_KEY_LEN: usize = splitting::ENCRYPTED_SECRET_KEY_LEN;
+    #[no_mangle]
+    pub static PUBLIC_KEY_LEN: usize = lettuce::PK_BYTES;
+    #[no_mangle]
+    pub static SECRET_KEY_LEN: usize = lettuce::SK_BYTES;
+    #[no_mangle]
+    pub static SPECK_KEY_LEN: usize = speck::KEY_SIZE;
+    #[no_mangle]
+    pub static SHA512_DIGEST_LEN: usize = sha512::DIGEST_BYTE_COUNT;
 
     // MARK: Crypto
 
@@ -139,6 +152,16 @@ pub mod c_api {
     
     // MARK: Users
 
+    /// A user of Hemlock, in a C-representable struct
+    #[repr(C)]
+    pub struct CUser<'a> {
+        user_id: u64,
+        email: &'a CStr,
+        public_key: lettuce::PublicKey,
+        encrypted_secret_key: *const u8,
+        master_key_hash: sha512::Digest
+    }
+
     // Creates a user with a given email address. This is an asynchronous function that calls a callback when finished.
     // The callback is passed the error code (0 if success), the user ID (0 if failed), and the master key (all 0's if failed).
     #[no_mangle]
@@ -173,9 +196,33 @@ pub mod c_api {
     }
 
     #[no_mangle]
-    pub extern "C" fn capi_download_user(rt: *mut Runtime, user_id: UserID) {
-        // TODO: Adda  callback to this function header, and maybe also create a struct to pass into it!
+    pub extern "C" fn capi_download_user(rt: *mut Runtime, user_id: UserID, callback: extern fn(c_int, *mut CUser)) {
+        // TODO: Add callback to this function header, and maybe also create a struct to pass into it!
         // Make a rust struct that represents a User, and make it compatible with C, then pass that! that would be cool
+
+        let rt = unsafe { &*rt };
+        let db = rt.block_on(DynamoDB::new());
+
+        rt.spawn(async move {
+            match users::get_user(&db, user_id).await {
+                Ok(mut user_entry) => {
+                    let c_string = CString::new(user_entry.email.as_str()).unwrap();
+                    let cstr = c_string.as_c_str();
+
+                    let mut c_user = CUser {
+                        user_id,
+                        email: cstr,
+                        public_key: user_entry.public_key,
+                        encrypted_secret_key: user_entry.encrypted_secret_key.as_mut_ptr(),
+                        master_key_hash: user_entry.master_key_hash.try_into().unwrap(),
+                    };
+                    
+                    callback(SUCCESS, &mut c_user);
+                },
+                Err(UsersError::UserDoesNotExist) => callback(USER_DOES_NOT_EXIST, core::ptr::null_mut()),
+                Err(_) => callback(CONNECTION_ERROR, core::ptr::null_mut())
+            }
+        });
     }
 
 }
@@ -215,6 +262,16 @@ mod tests {
         0xF3, 0x98, 0x1F, 0xCC, 0x64, 0xD9, 0x6F, 0xC5, 
         0xDC, 0x83, 0x32, 0xA5, 0x3C, 0xEB, 0xAF, 0xF6
     ];
+
+    #[tokio::test]
+    async fn key_enc_test() {
+        let key = speck::gen();
+        let keykey = speck::gen();
+
+        let encrypted_key = speck::enc_vec(key, keykey.to_vec());
+
+        println!("{}", encrypted_key.len())
+    }
 
 
     #[tokio::test]
