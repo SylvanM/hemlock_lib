@@ -1,4 +1,4 @@
-# Hemlock
+# Hemlock ([Source](https://github.com/SylvanM/hemlock_lib/))
 
 Hemlock is a security application that enables an individual or organization to split a document among multiple semi-trusted parties. 
 It is primarily for data that only needs to be accessed in an unlikely event. (E.g., a company is being sued and needs to produce 
