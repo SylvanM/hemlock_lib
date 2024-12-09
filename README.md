@@ -9,6 +9,9 @@ you for some reason need to authorize a nuclear launch.)
 
 `hemlock_lib` is the Rust library that implements all the basic functionality of the application *except* a UI, because I'm bad at designing UI's.
 My attempt at creating a UI for macOS can be found [here](https://github.com/SylvanM/Hemlock). I have included a C header file that allows the core
-components of the library to be called from C code, for portability. (Not everyone uses Rust yet, even if they should.)
+components of the library to be called from C code, for portability. (Not everyone uses Rust yet, even if they should.) 
 
+## Installation
 
+Hemlock is a cargo crate, so you can add it to a rust project with `cargo add hemlock_lib`. If you want to use the library in a non-Rust project,
+you'll need to compile the library to a binary, and use the C header file to call Hemlock functions directly.
