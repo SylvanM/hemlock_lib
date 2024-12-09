@@ -238,6 +238,7 @@ impl DynamoDB {
 
 	/// Returns the user entry for a specific user_id
 	pub async fn download_user_entry(&self, user_id: users::UserID) -> Result<users::UserEntry, DynamoError> {
+		println!("Looking for user with ID {}", user_id);
 		let result = match self.client.query()
 			.table_name(Table::Users.value())
 			.key_condition_expression("#uidk = :uid")
@@ -250,6 +251,7 @@ impl DynamoDB {
 			};
 
 		if let Some(items) = result.items {
+			println!("Items: {:?}", items);
 			debug_assert!(items.len() == 1);
 			let user_info = items[0].clone();
 

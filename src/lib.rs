@@ -59,14 +59,37 @@ fn write_vec_to_c_ptr(vec: Vec<u8>) -> *mut u8 {
     ptr
 }
 
+fn vec_to_raw_ptr<T: Copy>(vec: Vec<T>) -> *mut T {
+
+    use std::alloc::*;
+
+    let layout = match Layout::array::<T>(vec.len()) {
+        Ok(l) => l,
+        Err(e) => panic!("Error allocating array: {:?}", e),
+    };
+
+    let ptr = unsafe {
+        // GlobalAlloc::alloc
+        alloc(layout) as *mut T
+    };
+
+    for i in 0..vec.len() {
+        unsafe {
+            *(ptr.add(i)) = vec[i];
+        }
+    }
+
+    ptr
+}
+
 // MARK: C Interface
 pub mod c_api {
 
-    use rusty_crypto::{lettuce, sha512, speck};
+    use rusty_crypto::{lettuce, secsharing::sharing::{self, Share256}, sha512, speck};
     use tokio::runtime::Runtime;
     use std::ffi::{self, *};
 
-    use crate::{c_ptr_to_vec, io_util::*, splitting, web::{dynamo::DynamoDB, users::{self, UserID, UsersError}}, write_vec_to_c_ptr};
+    use crate::{c_ptr_to_vec, io_util::*, splitting, vec_to_raw_ptr, web::{dynamo::DynamoDB, messages, shares::{self, FileID, SharesError}, users::{self, UserID, UsersError}}, write_vec_to_c_ptr};
 
     // MARK: Constants to publish
 
@@ -81,12 +104,20 @@ pub mod c_api {
     #[no_mangle]
     pub static SHA512_DIGEST_LEN: usize = sha512::DIGEST_BYTE_COUNT;
 
+    #[no_mangle]
+    pub static SECRET_LEN: usize = sharing::SECRET_SIZE_BYTES;
+    #[no_mangle]
+    pub static SHARE_LEN: usize = sharing::SHARE_SIZE_BYTES;
+
     // MARK: Crypto
 
     #[no_mangle]
     pub extern "C" fn capi_hash_bytes(pt: *mut u8, pt_len: c_int, digest: &mut sha512::Digest) -> c_int {
+        println!("ENTERING C FUNCTION");
         let as_vector = c_ptr_to_vec(pt, pt_len);
-        crate::hash_bytes(as_vector, digest)
+        crate::hash_bytes(as_vector, digest);
+        println!("Digest: {:?}", digest);
+        SUCCESS
     }
 
     #[no_mangle]
@@ -152,14 +183,16 @@ pub mod c_api {
     
     // MARK: Users
 
-    /// A user of Hemlock, in a C-representable struct
+    /// A share to pass to an outside user
     #[repr(C)]
-    pub struct CUser<'a> {
-        user_id: u64,
-        email: &'a CStr,
-        public_key: &'a mut lettuce::PublicKey,
-        encrypted_secret_key: &'a mut [u8 ; splitting::ENCRYPTED_SECRET_KEY_LEN],
-        master_key_hash: &'a mut sha512::Digest
+    #[derive(Clone, Copy)]
+    pub struct CPlaintextShare {
+        pub file_owner_email: *const c_char,
+        pub share_owner_id: UserID,
+        pub file_owner_id: UserID,
+        pub file_id: FileID,
+        pub share: Share256,
+        pub group_key: speck::Key
     }
 
     // Creates a user with a given email address. This is an asynchronous function that calls a callback when finished.
@@ -297,6 +330,68 @@ pub mod c_api {
             });
     }
 
+    #[no_mangle]
+    pub extern "C" fn capi_process_inbox(rt: *mut Runtime, share_owner: UserID, master_key_ptr: *mut u8, completion: extern fn (i32)) {
+        let rt = unsafe { &*rt };
+        let db = rt.block_on(DynamoDB::new());
+
+        let master_key: [u8 ; speck::KEY_SIZE] = c_ptr_to_vec(master_key_ptr, speck::KEY_SIZE as i32).try_into().unwrap();
+
+        rt.spawn(async move {
+            match messages::process_inbox(&db, share_owner, master_key).await {
+                Ok(_) => completion(SUCCESS),
+                Err(_) => {
+                    // TODO: Add more error reporting
+                    completion(CONNECTION_ERROR)
+                }
+            } 
+        });
+    }
+
+    #[no_mangle]
+    pub extern "C" fn capi_download_shares(rt: *mut Runtime, share_owner: UserID, master_key_ptr: *mut u8, completion: extern fn (i32, i32, *mut CPlaintextShare)) {
+        let rt = unsafe { &*rt };
+        let db = rt.block_on(DynamoDB::new());
+
+        let master_key: [u8 ; speck::KEY_SIZE] = c_ptr_to_vec(master_key_ptr, speck::KEY_SIZE as i32).try_into().unwrap();
+
+        rt.spawn(async move {
+            match shares::download_shares(&db, share_owner).await {
+                Ok(shares) => {
+                    let c_shares: Vec<CPlaintextShare> = shares.clone().into_iter().map(
+                        |share| share.decrypt(master_key.clone().try_into().unwrap())
+                    ).map(|pt_share| CPlaintextShare {
+                        file_owner_email: {
+                            let email = rt.block_on(users::get_user(&db, share_owner)).unwrap().email;
+                            let email_cstring = CString::new(email.as_str()).unwrap();
+                            let email_cstr = email_cstring.as_c_str();
+                            email_cstr.as_ptr()
+                        },
+                        share_owner_id: share_owner,
+                        file_owner_id: pt_share.file_owner,
+                        file_id: pt_share.file_id,
+                        share: pt_share.share,
+                        group_key: pt_share.group_key,
+                    }).collect();
+                    
+                    let c_array = vec_to_raw_ptr(c_shares);
+
+                    println!("Created c_array at {:?}", c_array);
+                    println!("Contents (ID's):");
+                    for i in 0..shares.len() {
+                        let c_share = unsafe { *(c_array.add(i)) };
+                        println!("Share {} ID: {}", i, c_share.file_owner_id);
+                    }
+
+                    completion(SUCCESS, shares.len() as i32, c_array);
+                },
+                Err(e) => {
+                    println!("The following error occurred while fetching shares: {:?}", e);
+                    completion(CONNECTION_ERROR, 0, std::ptr::null_mut());
+                },
+            }
+        });
+    }
 }
 
 // MARK: Tests
@@ -541,6 +636,21 @@ mod tests {
         match splitting::recover_file(share_entry.file_id, SYLVAN_USER_ID, share_entry.group_key, &mut joe_file).await {
             Ok(_) => println!("Recovered the file!"),
             Err(e) => panic!("Error recovering file: {:?}", e),
+        }
+    }
+
+
+    #[tokio::test]
+    async fn test_joe_split() {
+        // we are going to have a file, sylvans_secret, and have sylvan split the file and send it to aleph and joe.
+
+        let db = dynamo::DynamoDB::new().await;
+
+        let mut joes_secret = File::open("test_files/joes_secret.pdf").unwrap();
+
+        match splitting::split_and_share(&mut joes_secret, JOE_USER_ID, 2, vec![ALEPH_USER_ID, SYLVAN_USER_ID]).await {
+            Ok(_) => println!("Successfully split file"),
+            Err(e) => panic!("Error splitting file: {:?}", e)
         }
     }
 }

@@ -6,6 +6,7 @@ use super::{dynamo::{self, DynamoDB}, users::{bytes_to_u64, UserID}};
 pub type FileID = u64;
 
 /// Represents an entry in the shares database
+#[derive(Clone)]
 pub struct CiphertextShareEntry {
 	pub share_owner_id: UserID,
 	pub encrypted_file_owner_id: Vec<u8>,
